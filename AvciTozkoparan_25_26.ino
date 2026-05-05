@@ -1,345 +1,586 @@
-// ============================================================
-// AvciTozkoparan robot — line follower with color shooter
-// HOW IT RUNS: setup() runs ONCE at power-on, then loop() runs
-// over and over forever.
-// ============================================================
+-0======/* =====================================================================
+   TOZKOPARAN ROBOT 2026 - FINAL CODE
+   18th International MEB Robot Competition
 
-// --- LIBRARIES (extra code we borrow) ---
-#include <Wire.h>                    // lets sensors talk to the Arduino
-#include "Adafruit_TCS34725.h"       // color sensor
-#include <QTRSensors.h>              // line sensors (the 4 under the robot)
-#include <Servo.h>                   // servo = the shooter arm
+   Robot: Arduino Nano + TB6612FNG + 4xQTR + TCS34725 + MG90S + NeoPixel
 
-// --- ROBOT MEMORY (variables) ---
-int Pist = 0;            // which path we picked (1 = short, 2 = long)
-int i = 0;               // helper counter
-int R = 0;               // red brightness for LEDs
-int G = 0;               // green brightness for LEDs
-int B = 0;               // blue brightness for LEDs
-int color = 0;           // 0=none, 1=blue, 2=red, 3=green
-int say = 0;             // (not used)
-int Atis = 0;            // 0 = haven't shot yet, 1 = already shot ("atış" = shot)
-int sagdon = 0;          // (not used) "sağ dön" = turn right
-int soldon = 0;          // (not used) "sol dön" = turn left
-int integral = 0;        // PID: total error added up over time
-float Ki = 0.00001;      // PID I — tiny long-term correction
-int LedOff = 1;          // 1 = LEDs allowed to turn off
-int MZ80 = 2;            // pin for the front distance sensor
-int DS1 = 12;            // pin for switch 1 (picks the path)
-int DS2 = 13;            // pin for switch 2
-int Say = 0;             // counts the crossroads we drove over ("sayı" = number)
+   Logic:
+   - One single code that handles BOTH tracks (Pist-A and Pist-B)
+   - DIP-switch on D12: HIGH = Pist-A (1 turn), LOW = Pist-B (5 turns)
+   - Calibrate the line sensors at startup
+   - LEDs turn ON IMMEDIATELY when entering a colored zone
+   - Finish animation at the end
 
-// 4 line sensors plugged into pins A0, A1, A2, A3
-QTRSensorsAnalog qtra((unsigned char[]){ 0, 1, 2, 3 }, 4);
-unsigned int sensorValues[4];   // what the line sensors see
+   IMPORTANT: uses the NEW QTRSensors library
+   ===================================================================== */
 
-int tabanhiz = 150;      // normal driving speed ("taban hızı" = base speed)
-int maxhiz = 200;        // top speed ("max hız" = max speed)
-float Kp = 0.1;          // PID P — how hard to correct steering
-float Kd = 3;            // PID D — how smoothly to correct
-int sonhata = 0;         // last error ("son hata" = last error)
-int hata = 0;            // how far off the black line we are right now
-int solmotorpwm = 0;     // left motor power
-int sagmotorpwm = 0;     // right motor power
-int zemin = 1;           // floor mode: 1 = black line on white, 0 = white on black ("zemin" = floor)
-
-Servo myservo;           // the shooter arm
-int LPwm  = 11;          // LEFT motor speed pin
-int LDir1 = 10;          // LEFT motor direction pin 1
-int LDir2 = 9;           // LEFT motor direction pin 2
-int RPwm  = 6;           // RIGHT motor speed pin
-int RDir1 = 7;           // RIGHT motor direction pin 1
-int RDir2 = 8;           // RIGHT motor direction pin 2
-int Laser = 4;           // pin for the aiming laser
-
-// --- LED STRIP (8 colored lights on top) ---
+#include <Wire.h>
+#include "Adafruit_TCS34725.h"
+#include <QTRSensors.h>
+#include <Servo.h>
 #include <Adafruit_NeoPixel.h>
-#ifdef __AVR__
-#include <avr/power.h>
-#endif
-#define PIN 5                                 // LED strip is wired to pin 5
-#define NUMPIXELS 8                           // we have 8 LEDs
-Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
-#define DELAYVAL 1
+
+// =====================================================================
+// PINS
+// =====================================================================
+#define MZ80_PIN      2
+#define SERVO_PIN     3
+#define LASER_PIN     4
+#define NEOPIXEL_PIN  5
+
+// Right motor
+#define R_PWM         6
+#define R_DIR1        7
+#define R_DIR2        8
+
+// Left motor
+#define L_DIR2        9
+#define L_DIR1        10
+#define L_PWM         11
+
+#define DIP_SWITCH    12
+#define NUM_PIXELS    8
+#define NUM_QTR_SENSORS 4
+
+// =====================================================================
+// CONFIGURATION — CALIBRATE these for your robot!
+// =====================================================================
+
+// PID coefficients (taken from Test_3_v2)
+float Kp = 0.05;
+float Kd = 2.0;
+
+// Speeds
+int BASE_SPEED = 130;
+int MAX_SPEED  = 200;
+int TURN_SPEED = 100;
+int CALIB_SPEED = 60;
+
+// TIMINGS (milliseconds) — CALIBRATE on the real track!
+int FORWARD_INTO_TURQUOISE_MS = 800;   // How long to drive into the turquoise zone before shooting
+int STABILIZE_BEFORE_SHOT_MS  = 1000;  // Pause before the shot (let the robot settle)
+int SHOOT_DELAY_MS            = 1000;  // Pause after the shot
+int TURN_90_MS                = 550;   // Time it takes to do a 90° turn
+int FORWARD_BETWEEN_TURNS_MS  = 400;   // Drive forward between turns (Pist-B)
+int PAUSE_BETWEEN_TURNS_MS    = 300;   // Pause between turns
+int FINISH_DRIVE_MS           = 2000;  // Time to drive to the finish gate after the bridge
+
+// Servo
+int SERVO_LOADED  = 180;    // Cocked / loaded position
+int SERVO_RELEASE = 90;     // Release / shooting position
+
+// Color thresholds — CALIBRATED FROM REAL MEASUREMENTS!
+// Measurements: TURQUOISE R=50 G=104 B=115 / GREEN R=78 G=123 B=68 / WHITE R=117 G=85 B=57
+
+// TURQUOISE: the key clue is B is high (>100). Green has B=68, white has B=57.
+int TURQUOISE_R_MAX = 90;     // Measured 50, white 117 -> threshold 90
+int TURQUOISE_G_MIN = 95;     // Measured 104, white 85 -> threshold 95
+int TURQUOISE_B_MIN = 90;     // Measured 115, green 68, white 57 -> threshold 90 (KEY!)
+
+// GREEN: the key clue is G is high (>100) AND B is low (<90)
+int GREEN_R_MAX = 100;        // Measured 78, white 117 -> threshold 100
+int GREEN_G_MIN = 110;        // Measured 123, turquoise 104 -> threshold 110 (separates from turquoise)
+int GREEN_B_MAX = 85;         // Measured 68, turquoise 115 -> threshold 85 (KEY!)
+
+// =====================================================================
+// OBJECTS
+// =====================================================================
+QTRSensors qtra;
+unsigned int sensorValues[NUM_QTR_SENSORS];
+
+Servo arbalet;   // "arbalet" = crossbow (the arrow-launching servo)
+
+Adafruit_NeoPixel pixels(NUM_PIXELS, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X);
 
-int Btn = 0;             // start button is on pin 0
+// =====================================================================
+// GLOBAL VARIABLES
+// =====================================================================
+bool shotFired = false;
+int pistMode = 1;
+int currentColor = 0;
+int lastError = 0;
 
-// =====================================================
-// setup() — runs ONCE when the robot turns on
-// =====================================================
+bool tcs_ok = false;
+
+#define COLOR_NONE      0
+#define COLOR_TURQUOISE 1
+#define COLOR_GREEN     2
+
+// =====================================================================
+// SETUP — runs ONCE when the robot turns on
+// =====================================================================
 void setup() {
-  Serial.begin(9600);                // open serial (so we can print messages to computer)
-  myservo.attach(3);                 // shooter arm is on pin 3
-  myservo.write(180);                // park the arm in "ready" position
-  pinMode(Btn, INPUT_PULLUP);        // start button is an input
-  pinMode(Laser, OUTPUT);            // laser is an output (we turn it on/off)
-  pinMode(6, OUTPUT);                // motor pins are all outputs
-  pinMode(7, OUTPUT);
-  pinMode(8, OUTPUT);
-  pinMode(9, OUTPUT);
-  pinMode(10, OUTPUT);
-  pinMode(11, OUTPUT);
-  pinMode(12, INPUT_PULLUP);         // switch DS1 — input
-  pinMode(13, INPUT_PULLUP);         // switch DS2 — input
-  pinMode(MZ80, INPUT);              // distance sensor — input
-#if defined(__AVR_ATtiny85__) && (F_CPU == 16000000)
-  clock_prescale_set(clock_div_1);
-#endif
-  pixels.begin();                    // start the LED strip
+  Serial.begin(9600);
+  delay(500);
 
-  // Check that the color sensor is plugged in
+  Serial.println(F("=========================================="));
+  Serial.println(F("TOZKOPARAN ROBOT 2026"));
+  Serial.println(F("=========================================="));
+
+  // Motor pins
+  pinMode(R_PWM, OUTPUT);
+  pinMode(R_DIR1, OUTPUT);
+  pinMode(R_DIR2, OUTPUT);
+  pinMode(L_PWM, OUTPUT);
+  pinMode(L_DIR1, OUTPUT);
+  pinMode(L_DIR2, OUTPUT);
+  motorStop();
+
+  // Laser
+  pinMode(LASER_PIN, OUTPUT);
+  digitalWrite(LASER_PIN, HIGH);  // Turn ON to verify the aim point
+
+  // Start sensor (MZ80) — detects when the start gate has opened
+  pinMode(MZ80_PIN, INPUT);
+
+  // DIP-switch (chooses Pist-A vs Pist-B)
+  pinMode(DIP_SWITCH, INPUT_PULLUP);
+
+  // Servo
+  arbalet.attach(SERVO_PIN);
+  arbalet.write(SERVO_LOADED);
+
+  // QTR line sensors
+  qtra.setTypeAnalog();
+  qtra.setSensorPins((const uint8_t[]){A0, A1, A2, A3}, NUM_QTR_SENSORS);
+
+  // NeoPixel
+  pixels.begin();
+  pixels.clear();
+  pixels.show();
+
+  // Color sensor
   if (tcs.begin()) {
-    Serial.println("Sensor VAR");    // "Sensör var" = "Sensor is here" — found it!
+    Serial.println(F("OK: TCS34725"));
+    tcs_ok = true;
   } else {
-    Serial.println("No TCS34725 found ... check your connections");
-    while (1)
-      ;  // hata!  (= "error" — stop here forever)
-  }
-
-  // --- CALIBRATION ---
-  // Wiggle left and right 8 times so the line sensors learn
-  // what the white floor and the black line look like.
-  for (i = 0; i < 80; i++) {
-    if (0 <= i && i < 5)  motorkontrol(-150, 150);   // wiggle one way
-    if (5 <= i && i < 15) motorkontrol(150, -150);   // wiggle the other way
-    if (15 <= i && i < 25) motorkontrol(-150, 150);
-    if (25 <= i && i < 35) motorkontrol(150, -150);
-    if (35 <= i && i < 45) motorkontrol(-150, 150);
-    if (45 <= i && i < 55) motorkontrol(150, -150);
-    if (55 <= i && i < 65) motorkontrol(-150, 150);
-    if (65 <= i && i < 70) motorkontrol(150, -150);
-    if (i >= 70) {
-      motorkontrol(0, 0);             // last steps: STOP
-      delay(5);
+    Serial.println(F("ERROR: TCS34725 not found!"));
+    tcs_ok = false;
+    // Blink red to signal the error
+    for (int i = 0; i < 5; i++) {
+      setAllPixels(150, 0, 0);
+      delay(300);
+      setAllPixels(0, 0, 0);
+      delay(300);
     }
-    qtra.calibrate();                 // remember what the floor looks like
-    delay(3);
-  }
-  digitalWrite(Laser, LOW);           // turn laser OFF
-  motorkontrol(0, 0);                 // make sure motors are stopped
-}
-
-// =====================================================
-// loop() — runs OVER AND OVER forever
-// =====================================================
-void loop() {
-  Stop();                                          // pause if something is in the way
-
-  // --- READ THE LINE ---
-  unsigned int sensors[4];
-  unsigned int position = qtra.readLine(sensors, 1, zemin);
-  hata = position - 1500;                          // how far off the line we are (0 = perfect)
-  integral += hata;                                // add error to running total
-  int duzeltmehizi = Kp * hata + Kd * (hata - sonhata) + Ki * integral;  // PID math: how much to steer
-  sonhata = hata;                                  // remember error for next loop
-
-  // Auto-detect: are we on a white floor or a black floor?
-  if (sensors[0] < 200 && sensors[3] < 200) { zemin = 0; }  // white floor
-  if (sensors[0] > 201 && sensors[3] > 201) { zemin = 1; }  // black floor
-
-  //    Serial.print("s0=");
-  //    Serial.print(sensors[0]);
-  //    Serial.print("    s2=");
-  //    Serial.print(sensors[1]);
-  //    Serial.print("    s3=");
-  //    Serial.print(sensors[2]);
-  //    Serial.print("    s4=");
-  //    Serial.print(sensors[3]);
-  //Serial.print("   Hata=");
-  // Serial.println(hata);
-
-
-
-  // --- DRIVE THE MOTORS ---
-  // Make one wheel faster than the other to steer toward the line.
-  sagmotorpwm = tabanhiz + duzeltmehizi;           // right motor
-  solmotorpwm = tabanhiz - duzeltmehizi;           // left motor
-  sagmotorpwm = constrain(sagmotorpwm, -100, maxhiz);   // never go faster than max
-  solmotorpwm = constrain(solmotorpwm, -100, maxhiz);
-
-  // If the line totally disappeared on one side, do a sharp turn to find it
-  if (hata == (-1500)) motorkontrol(175, -125);    // line lost on the LEFT  → spin LEFT  to chase it
-  else if (hata == 1500) motorkontrol(-125, 175);  // line lost on the RIGHT → spin RIGHT to chase it
-  else
-    motorkontrol(solmotorpwm, sagmotorpwm);        // normal smooth driving (PID)
-
-  // --- CROSSROAD DETECTED ---
-  // When ALL 4 line sensors see black at once, we just drove over a crossroad.
-  if (analogRead(A3) < 700 && analogRead(A2) < 700 && analogRead(A1) < 700 && analogRead(A0) < 700) {
-    Say = Say + 1;                                 // count it
-    motorkontrol(0, 0);                            // stop briefly
-    delay(500);
-    motorkontrol(60, 60);                          // creep forward
-    delay(250);
   }
 
-  // --- AT THE 3rd CROSSROAD: READ COLOR AND SHOOT ---
-  if (analogRead(A3) < 700 && analogRead(A2) < 700 && analogRead(A1) < 700 && analogRead(A0) < 700 && Atis == 0 && Say == 3) {
-    motorkontrol(60, 60);
+  // Read DIP — choose track
+  if (digitalRead(DIP_SWITCH) == HIGH) {
+    pistMode = 1;
+    Serial.println(F("MODE: PIST-A (1 turn)"));
+  } else {
+    pistMode = 2;
+    Serial.println(F("MODE: PIST-B (5 turns)"));
+  }
+
+  // ===== QTR CALIBRATION =====
+  Serial.println(F("Calibrating QTR (3 seconds)..."));
+  setAllPixels(50, 50, 50);  // White light during calibration
+
+  // Calibration like Test_3 — 60 iterations of 50ms = 3 seconds total
+  for (int i = 0; i < 60; i++) {
+    if (i < 15) {
+      motorLeft(-CALIB_SPEED);
+      motorRight(CALIB_SPEED);
+    } else if (i < 30) {
+      motorLeft(CALIB_SPEED);
+      motorRight(-CALIB_SPEED);
+    } else if (i < 45) {
+      motorLeft(-CALIB_SPEED);
+      motorRight(CALIB_SPEED);
+    } else {
+      motorLeft(CALIB_SPEED);
+      motorRight(-CALIB_SPEED);
+    }
+    qtra.calibrate();
     delay(50);
-    TCSRead();                                     // look at the color sensor
-    if (color == 2) {                              // color 2 = RED
-      if (digitalRead(DS1) == HIGH) {              // SWITCH UP → take PATH 1 (short)
-        Pist = 1;
-        motorkontrol(60, 60);
-        delay(3600);  // Kırmızıda ileri gitme süresi  (drive forward at red)
-        motorkontrol(0, 0);
-        delay(1000);
-        myservo.write(90);                         // SHOOT (move arm to 90°)
-        delay(1000);
-        Atis = 1;                                  // remember: we have shot
-        motorkontrol(80, -80);
-        delay(550);  // 90 dönüş süresi              (turn 90 degrees)
-        motorkontrol(60, 60);
-        delay(4500);  // atış sonrası düz gitme süresi  (drive forward after shooting)
-        hata = 0;
-      }
-      if (digitalRead(DS1) == LOW) {               // SWITCH DOWN → take PATH 2 (long, with 5 turns)
-        Pist = 2;
-        motorkontrol(60, 60);
-        delay(3600);  // Kırmızıda ileri gitme süresi
-        motorkontrol(0, 0);
-        delay(1000);
-        myservo.write(90);                         // SHOOT
-        delay(1000);
-        Atis = 1;
-        motorkontrol(80, -80);
-        delay(550);  // 90 dönüş süresi              (turn 1)
-        motorkontrol(0, 0);
-        delay(500);
-        motorkontrol(80, -80);
-        delay(550);  // 90 dönüş süresi              (turn 2)
-        motorkontrol(0, 0);
-        delay(500);
-        motorkontrol(80, -80);
-        delay(550);  // 90 dönüş süresi              (turn 3)
-        motorkontrol(0, 0);
-        delay(500);
-        motorkontrol(80, -80);
-        delay(550);  // 90 dönüş süresi              (turn 4)
-        motorkontrol(0, 0);
-        delay(500);
-        motorkontrol(80, -80);
-        delay(550);  // 90 dönüş süresi              (turn 5)
-        motorkontrol(0, 0);
-        delay(500);
-        motorkontrol(60, 60);
-        delay(4500);  // atış sonrası düz gitme süresi
-        hata = 0;
-      }
+  }
+  motorStop();
 
-      // Led Söndür   (turn the LEDs OFF)
-      for (int i = 0; i < NUMPIXELS; i++) {
-        pixels.setPixelColor(i, pixels.Color(0, 0, 0));
-        pixels.show();
-        //delay(0.1);
-      }
-    }
+  Serial.println(F("Calibration complete"));
+
+  // Ready signal — blink green twice
+  for (int i = 0; i < 2; i++) {
+    setAllPixels(0, 100, 0);
+    delay(300);
+    setAllPixels(0, 0, 0);
+    delay(200);
   }
 
+  digitalWrite(LASER_PIN, LOW);
 
-  // --- AT THE 5th CROSSROAD: GREEN FINISH ---
-  if (analogRead(A3) < 700 && analogRead(A2) < 700 && analogRead(A1) < 700 && analogRead(A0) < 700 && Atis == 1 && Say == 5) {
-    // Light all 8 LEDs GREEN
-    for (int i = 0; i < NUMPIXELS; i++) {
-      pixels.setPixelColor(i, pixels.Color(0, 100, 0));
-      pixels.show();
-      //delay(0.1);
+  Serial.println(F("Waiting for start (MZ80)..."));
+
+  // ===== WAIT FOR START =====
+  // MZ80: HIGH = path is clear, LOW = obstacle (gate is still closed)
+  // Robot waits until the gate opens (MZ80 goes HIGH)
+  while (digitalRead(MZ80_PIN) == LOW) {
+    delay(10);
+  }
+
+  Serial.println(F(">>> START! <<<"));
+  delay(100);
+}
+
+// =====================================================================
+// LOOP — runs OVER AND OVER once setup() finishes
+// =====================================================================
+void loop() {
+  // ===== DETECT LINE TYPE =====
+  // In the Akdeniz Dalgası section the line becomes BLACK on a WHITE background (inverted!)
+  // Read calibrated QTR values
+  qtra.readCalibrated(sensorValues);
+
+  // Determine the average background color
+  // If all 4 sensors show LARGE values = lots of black around -> the line is WHITE
+  // If all 4 sensors show SMALL values = lots of white around -> the line is BLACK
+  int avgValue = (sensorValues[0] + sensorValues[1] + sensorValues[2] + sensorValues[3]) / 4;
+
+  // ===== PID LINE FOLLOWING =====
+  unsigned int position;
+  if (avgValue > 500) {
+    // Lots of black around -> look for a WHITE line (normal driving)
+    position = qtra.readLineWhite(sensorValues);
+  } else {
+    // Lots of white around -> look for a BLACK line (Akdeniz Dalgası)
+    position = qtra.readLineBlack(sensorValues);
+  }
+
+  int error = position - 1500;
+  int correction = Kp * error + Kd * (error - lastError);
+  lastError = error;
+
+  int leftSpeed = BASE_SPEED + correction;
+  int rightSpeed = BASE_SPEED - correction;
+  leftSpeed = constrain(leftSpeed, -100, MAX_SPEED);
+  rightSpeed = constrain(rightSpeed, -100, MAX_SPEED);
+
+  motorLeft(leftSpeed);
+  motorRight(rightSpeed);
+
+  // ===== CHECK FOR COLORED ZONES =====
+  if (tcs_ok) {
+    int detectedColor = readColor();
+
+    // Turquoise zone (shooting)
+    if (detectedColor == COLOR_TURQUOISE && !shotFired) {
+      handleTurquoiseZone();
     }
-    motorkontrol(60, 60);
-    delay(8500);  // Yeşilde ileri gitme süresi   (drive forward at green)
 
-    // Turn LEDs OFF
-    for (int i = 0; i < NUMPIXELS; i++) {
-      pixels.setPixelColor(i, pixels.Color(0, 0, 0));
-      pixels.show();
-      //delay(0.1);
+    // Green zone (bridge) — only after the shot has been fired
+    if (detectedColor == COLOR_GREEN && shotFired) {
+      handleGreenZone();
+    }
+
+    // Exiting turquoise -> turn LEDs off
+    if (currentColor == COLOR_TURQUOISE && detectedColor != COLOR_TURQUOISE) {
+      setAllPixels(0, 0, 0);
+      currentColor = COLOR_NONE;
+      Serial.println(F("Exited turquoise"));
+    }
+
+    // Exiting green -> turn LEDs off, then run finish sequence
+    if (currentColor == COLOR_GREEN && detectedColor != COLOR_GREEN) {
+      setAllPixels(0, 0, 0);
+      currentColor = COLOR_NONE;
+      Serial.println(F("Exited green"));
+      finishRace();
     }
   }
 }
 
+// =====================================================================
+// TURQUOISE ZONE — drive to end of zone, shoot the arrow, turn right
+// =====================================================================
+void handleTurquoiseZone() {
+  Serial.println(F(">>> TURQUOISE <<<"));
 
-// =====================================================
-// Stop() — pause motors when the front sensor sees something
-// =====================================================
-void Stop() {
+  // 1. Blue LED ON immediately (rules require LED on as soon as we enter)
+  setAllPixels(0, 0, 200);
+  currentColor = COLOR_TURQUOISE;
 
-  while (digitalRead(MZ80) == LOW) {  // while obstacle is in front...
-    motorkontrol(0, 0);               // ...keep motors stopped
-    delay(1);
+  // 2. Drive deeper into the zone — keep going while sensor still reads turquoise
+  Serial.println(F("Driving deeper to end of zone"));
+  motorLeft(80);
+  motorRight(80);
+  unsigned long timeoutStart = millis();
+  while (readColor() == COLOR_TURQUOISE) {
+    delay(20);
+    // Safety: max 2 seconds — don't get stuck here forever
+    if (millis() - timeoutStart > 2000) break;
+  }
+
+  // 3. STOP — we have reached the end of the turquoise zone
+  motorStop();
+  delay(STABILIZE_BEFORE_SHOT_MS);
+
+  // 4. Turn the laser ON for aiming
+  digitalWrite(LASER_PIN, HIGH);
+  delay(300);
+
+  // 5. SHOOT the arrow
+  Serial.println(F("SHOOT!"));
+  arbalet.write(SERVO_RELEASE);
+  delay(SHOOT_DELAY_MS);
+
+  // 6. Laser OFF
+  digitalWrite(LASER_PIN, LOW);
+
+  // 7. Reset servo back to loaded position
+  arbalet.write(SERVO_LOADED);
+  delay(300);
+
+  // 8. Turn right — keep spinning until the line sensors find a line
+  Serial.println(F("Turning right to find the line"));
+  motorLeft(-TURN_SPEED);
+  motorRight(TURN_SPEED);
+  delay(200);  // short pause to drive off the current line
+
+  // Spin until at least one of the middle sensors sees the white line
+  timeoutStart = millis();
+  while (true) {
+    qtra.readLineWhite(sensorValues);
+    // Line is found when at least one of the middle sensors sees white (>500)
+    if (sensorValues[1] > 500 || sensorValues[2] > 500) {
+      break;
+    }
+    if (millis() - timeoutStart > 1500) break;  // safety timeout
+    delay(10);
+  }
+  motorStop();
+  delay(200);
+
+  // 9. If we are running Pist-B (final round) — do 4 more right turns to line
+  if (pistMode == 2) {
+    Serial.println(F("Pist-B: 4 more 90 degree turns"));
+    for (int i = 0; i < 4; i++) {
+      // Drive straight a little
+      motorLeft(BASE_SPEED);
+      motorRight(BASE_SPEED);
+      delay(FORWARD_BETWEEN_TURNS_MS);
+      motorStop();
+      delay(PAUSE_BETWEEN_TURNS_MS);
+
+      // Then spin right until the line is found again
+      motorLeft(-TURN_SPEED);
+      motorRight(TURN_SPEED);
+      delay(200);  // get off the current line
+      timeoutStart = millis();
+      while (true) {
+        qtra.readLineWhite(sensorValues);
+        if (sensorValues[1] > 500 || sensorValues[2] > 500) break;
+        if (millis() - timeoutStart > 1500) break;
+        delay(10);
+      }
+      motorStop();
+      delay(PAUSE_BETWEEN_TURNS_MS);
+    }
+  }
+
+  shotFired = true;
+
+  // 10. Continue forward to leave the zone
+  motorLeft(BASE_SPEED);
+  motorRight(BASE_SPEED);
+  delay(500);
+
+  Serial.println(F("Shooting stage complete"));
+}
+
+// =====================================================================
+// GREEN ZONE (BRIDGE — Toroslar)
+// =====================================================================
+void handleGreenZone() {
+  Serial.println(F(">>> GREEN - BRIDGE <<<"));
+
+  // 1. Green LED ON immediately
+  setAllPixels(0, 200, 0);
+  currentColor = COLOR_GREEN;
+
+  // 2. Drive across the bridge with a SOFTER PID — keep going while we still see green
+  Serial.println(F("Crossing the bridge"));
+  unsigned long bridgeStart = millis();
+  int greenLostCounter = 0;
+
+  while (true) {
+    unsigned int position = qtra.readLineWhite(sensorValues);
+    int error = position - 1500;
+
+    // SOFTER PID for the bridge (50% gentler steering)
+    int correction = (Kp * 0.5) * error + (Kd * 0.5) * (error - lastError);
+    lastError = error;
+
+    int bridgeSpeed = BASE_SPEED - 20;
+    int leftSpeed = bridgeSpeed + correction;
+    int rightSpeed = bridgeSpeed - correction;
+    leftSpeed = constrain(leftSpeed, 50, MAX_SPEED);
+    rightSpeed = constrain(rightSpeed, 50, MAX_SPEED);
+
+    motorLeft(leftSpeed);
+    motorRight(rightSpeed);
+
+    // Check — has the green zone ended?
+    // Require 5 consecutive "not green" readings to avoid false triggers
+    if (readColor() != COLOR_GREEN) {
+      greenLostCounter++;
+      if (greenLostCounter >= 5) {
+        Serial.println(F("Bridge ended"));
+        break;
+      }
+    } else {
+      greenLostCounter = 0;
+    }
+
+    // Safety: max 10 seconds on the bridge
+    if (millis() - bridgeStart > 10000) {
+      Serial.println(F("Bridge timeout"));
+      break;
+    }
+
+    delay(20);
+  }
+
+  Serial.println(F("Bridge crossed"));
+}
+
+// =====================================================================
+// FINISH
+// =====================================================================
+void finishRace() {
+  Serial.println(F(">>> FINISH <<<"));
+
+  // Drive to the finish gate following the white line
+  unsigned long startTime = millis();
+  while (millis() - startTime < FINISH_DRIVE_MS) {
+    unsigned int position = qtra.readLineWhite(sensorValues);
+    int error = position - 1500;
+    int correction = Kp * error + Kd * (error - lastError);
+    lastError = error;
+
+    int leftSpeed = BASE_SPEED + correction;
+    int rightSpeed = BASE_SPEED - correction;
+    motorLeft(leftSpeed);
+    motorRight(rightSpeed);
+
+    // Check for end of track (all sensors see white = no more line under the robot)
+    if (sensorValues[0] < 200 && sensorValues[1] < 200 &&
+        sensorValues[2] < 200 && sensorValues[3] < 200) {
+      break;
+    }
+    delay(5);
+  }
+
+  motorStop();
+  delay(500);
+
+  Serial.println(F("RACE COMPLETED!"));
+
+  // Finish animation — rainbow
+  rainbowAnimation(5000);
+
+  // Fade out
+  for (int b = 100; b >= 0; b--) {
+    setAllPixels(b, b, b);
+    delay(20);
+  }
+
+  // Stay stopped forever
+  while (true) {
+    motorStop();
+    delay(100);
   }
 }
 
-// =====================================================
-// motorkontrol() — drives the two motors
-//   sagmotorpwm = right motor power (negative = backward)
-//   solmotorpwm = left  motor power (negative = backward)
-// =====================================================
-void motorkontrol(int sagmotorpwm, int solmotorpwm) {
-  if (sagmotorpwm <= 0) {              // RIGHT motor: negative number → go BACKWARD
-    sagmotorpwm = abs(sagmotorpwm);
-    analogWrite(RPwm, sagmotorpwm);
-    digitalWrite(RDir1, LOW);
-    digitalWrite(RDir2, HIGH);
-  } else {                             // RIGHT motor: positive → go FORWARD
-    analogWrite(RPwm, sagmotorpwm);
-    digitalWrite(RDir1, HIGH);
-    digitalWrite(RDir2, LOW);
-  }
-  if (solmotorpwm <= 0) {              // LEFT motor: negative → BACKWARD
-    solmotorpwm = abs(solmotorpwm);
-    analogWrite(LPwm, solmotorpwm);
-    digitalWrite(LDir1, LOW);
-    digitalWrite(LDir2, HIGH);
-  } else {                             // LEFT motor: positive → FORWARD
-    analogWrite(LPwm, solmotorpwm);
-    digitalWrite(LDir1, HIGH);
-    digitalWrite(LDir2, LOW);
+// =====================================================================
+// MOTOR CONTROL
+// =====================================================================
+void motorLeft(int speed) {
+  if (speed >= 0) {
+    digitalWrite(L_DIR1, HIGH);
+    digitalWrite(L_DIR2, LOW);
+    analogWrite(L_PWM, speed);
+  } else {
+    digitalWrite(L_DIR1, LOW);
+    digitalWrite(L_DIR2, HIGH);
+    analogWrite(L_PWM, abs(speed));
   }
 }
 
-// =====================================================
-// TCSRead() — reads the color sensor and lights up LEDs
-// =====================================================
-void TCSRead() {
-  float red, green, blue;
+void motorRight(int speed) {
+  if (speed >= 0) {
+    digitalWrite(R_DIR1, HIGH);
+    digitalWrite(R_DIR2, LOW);
+    analogWrite(R_PWM, speed);
+  } else {
+    digitalWrite(R_DIR1, LOW);
+    digitalWrite(R_DIR2, HIGH);
+    analogWrite(R_PWM, abs(speed));
+  }
+}
+
+void motorStop() {
+  digitalWrite(L_DIR1, LOW);
+  digitalWrite(L_DIR2, LOW);
+  analogWrite(L_PWM, 0);
+  digitalWrite(R_DIR1, LOW);
+  digitalWrite(R_DIR2, LOW);
+  analogWrite(R_PWM, 0);
+}
+
+// =====================================================================
+// COLOR SENSOR
+// =====================================================================
+int readColor() {
+  float r, g, b;
   tcs.setInterrupt(false);
-  tcs.getRGB(&red, &green, &blue);     // get red, green, blue values
+  tcs.getRGB(&r, &g, &b);
   tcs.setInterrupt(true);
 
-  //   Serial.print("R:\t"); Serial.print(int(red));
-  //  Serial.print("\tG:\t"); Serial.print(int(green));
-  //  Serial.print("\tB:\t"); Serial.print(int(blue));
+  if (r < TURQUOISE_R_MAX && g > TURQUOISE_G_MIN && b > TURQUOISE_B_MIN) {
+    return COLOR_TURQUOISE;
+  }
+  if (r < GREEN_R_MAX && g > GREEN_G_MIN && b < GREEN_B_MAX) {
+    return COLOR_GREEN;
+  }
+  return COLOR_NONE;
+}
 
-  if (red < 100 && green < 100 && blue > 100) {        // mostly blue → BLUE
-    LedOff = 0;
-    color = 1;  // mavi   (= blue)
-    R = 0;
-    G = 0;
-    B = 250;
-  } else if (red > 100 && green < 100 && blue < 100) { // mostly red → RED
-    LedOff = 0;
-    color = 2;  // kırmızı (= red)
-    R = 250;
-    G = 0;
-    B = 0;
-  } else if (red < 100 && green > 100 && blue < 100) { // mostly green → GREEN
-    LedOff = 0;
-    color = 3;  // yeşil  (= green)
-    R = 0;
-    G = 250;
-    B = 0;
-  } else if (LedOff == 1) {                            // nothing → OFF
-    color = 0;  // sön    (= off / extinguish)
-    R = 0;
-    G = 0;
-    B = 0;
+// =====================================================================
+// NEOPIXEL
+// =====================================================================
+void setAllPixels(uint8_t r, uint8_t g, uint8_t b) {
+  for (int i = 0; i < NUM_PIXELS; i++) {
+    pixels.setPixelColor(i, pixels.Color(r, g, b));
   }
-  // Light all 8 LEDs with whatever color we picked
-  for (int i = 0; i < NUMPIXELS; i++) {
-    pixels.setPixelColor(i, pixels.Color(R, G, B));
-    pixels.show();
-    //delay(0.1);
+  pixels.show();
+}
+
+void rainbowAnimation(unsigned long duration) {
+  unsigned long start = millis();
+  while (millis() - start < duration) {
+    for (int j = 0; j < 256; j++) {
+      for (int i = 0; i < NUM_PIXELS; i++) {
+        pixels.setPixelColor(i, wheel((i * 256 / NUM_PIXELS + j) & 255));
+      }
+      pixels.show();
+      delay(20);
+      if (millis() - start >= duration) return;
+    }
   }
+}
+
+uint32_t wheel(byte WheelPos) {
+  WheelPos = 255 - WheelPos;
+  if (WheelPos < 85) {
+    return pixels.Color(255 - WheelPos * 3, 0, WheelPos * 3);
+  }
+  if (WheelPos < 170) {
+    WheelPos -= 85;
+    return pixels.Color(0, WheelPos * 3, 255 - WheelPos * 3);
+  }
+  WheelPos -= 170;
+  return pixels.Color(WheelPos * 3, 255 - WheelPos * 3, 0);
 }
