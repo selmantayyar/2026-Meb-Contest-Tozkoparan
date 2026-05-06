@@ -44,7 +44,7 @@ float Kd = 0.8;         // derivative - higher = less shaking
 int BASE_SPEED=70;
 int MAX_SPEED   = 180;
 int TURN_SPEED  = 100;
-int CALIB_SPEED = 90;
+int CALIB_SPEED = 65;
 
 // Pre-calibration pause (place robot, get ready)
 const int PRE_CALIB_PAUSE_MS = 3000;
@@ -317,8 +317,8 @@ void doStartLine() {
   // This avoids false triggers when start-area's white line briefly
   // covers all sensors: in that case inner sensors are LOW (over white line),
   // not HIGH (over black line), so (B) fails.
-  const int EDGE_WHITE_THRESHOLD = 150;
-  const int LINE_BLACK_THRESHOLD = 600;
+  const int EDGE_WHITE_THRESHOLD = 300;
+  const int LINE_BLACK_THRESHOLD = 500;
   bool bothEdgesOnWhite =
     (sensorValues[0] < EDGE_WHITE_THRESHOLD) &&
     (sensorValues[3] < EDGE_WHITE_THRESHOLD);
@@ -328,7 +328,7 @@ void doStartLine() {
   bool onDalgasi = bothEdgesOnWhite && blackLineUnderInner;
 
   // Require ~500ms of sustained signal before transition
-  const int DALGASI_CONFIRM_FRAMES = 25;
+  const int DALGASI_CONFIRM_FRAMES = 8;
   if (onDalgasi) {
     stateChangeCounter++;
     if (stateChangeCounter >= DALGASI_CONFIRM_FRAMES) {
@@ -337,10 +337,6 @@ void doStartLine() {
       for (int i = 0; i < 4; i++) {
         Serial.print(sensorValues[i]); Serial.print(F(" "));
       }
-      Serial.println();
-      Serial.println(F("Press any key to enter Akdeniz Dalgasi..."));
-      while (!Serial.available()) delay(10);
-      while (Serial.available()) Serial.read();
       Serial.println(F("State 2: DALGASI"));
       currentState = STATE_DALGASI;
       stateChangeCounter = 0;
