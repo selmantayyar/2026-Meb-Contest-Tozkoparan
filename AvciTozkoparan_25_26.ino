@@ -37,11 +37,11 @@
 // =====================================================================
 
 // PID - higher Kp for stronger turns, more Kd to prevent oscillation
-float Kp = 0.05;        // proportional - if shakes, lower this
-float Kd = 0;         // derivative - higher = less shaking
+float Kp = 0.08;        // proportional - if shakes, lower this
+float Kd = 0.8;         // derivative - higher = less shaking
 
 // Speeds
-int BASE_SPEED=45;
+int BASE_SPEED=70;
 int MAX_SPEED   = 180;
 int TURN_SPEED  = 100;
 int CALIB_SPEED = 90;
@@ -374,7 +374,7 @@ void doDalgasi() {
   if (avg > BG_BLACK_THRESHOLD) {
     stateChangeCounter++;
     if (stateChangeCounter >= STATE_CHANGE_FRAMES) {
-       waitForKey();
+      //  waitForKey();
       Serial.println(F("State 3: AFTER_DALGASI"));
       currentState = STATE_AFTER_DALGASI;
       stateChangeCounter = 0;
