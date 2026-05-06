@@ -407,7 +407,7 @@ void doTurquoiseShoot() {
   motorLeft(80);
   motorRight(80);
   unsigned long ts = millis();
-  while (readColor() == COLOR_TURQUOISE && millis() - ts < 2000) {
+  while (readColor() == COLOR_TURQUOISE && millis() - ts < 1000) {
     delay(20);
   }
   motorStop();
