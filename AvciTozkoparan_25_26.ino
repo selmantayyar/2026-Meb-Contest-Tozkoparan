@@ -1,4 +1,4 @@
--0======/* =====================================================================
+/* =====================================================================
    TOZKOPARAN ROBOT 2026 - FINAL CODE
    18th International MEB Robot Competition
 
@@ -261,6 +261,8 @@ void loop() {
   motorLeft(leftSpeed);
   motorRight(rightSpeed);
 
+  waitForKey();  // <-- pauses here until you send a character
+
   // ===== CHECK FOR COLORED ZONES =====
   if (tcs_ok) {
     int detectedColor = readColor();
@@ -290,6 +292,15 @@ void loop() {
       finishRace();
     }
   }
+}
+
+void waitForKey() {
+  Serial.println(F("STEP COMPLETE — press any key to continue, or power off to stop"));
+  while (Serial.available() == 0) {
+    motorStop();
+    delay(50);
+  }
+  while (Serial.available() > 0) Serial.read(); // flush
 }
 
 // =====================================================================
