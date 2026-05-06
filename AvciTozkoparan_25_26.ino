@@ -37,11 +37,11 @@
 // =====================================================================
 
 // PID - higher Kp for stronger turns, more Kd to prevent oscillation
-float Kp = 0.08;        // proportional - if shakes, lower this
-float Kd = 3.0;         // derivative - higher = less shaking
+float Kp = 0.05;        // proportional - if shakes, lower this
+float Kd = 0;         // derivative - higher = less shaking
 
 // Speeds
-int BASE_SPEED  = 100;
+int BASE_SPEED=45;
 int MAX_SPEED   = 180;
 int TURN_SPEED  = 100;
 int CALIB_SPEED = 90;
@@ -275,6 +275,15 @@ void loop() {
   }
 }
 
+void waitForKey() {
+  Serial.println(F("STEP COMPLETE — press any key to continue, or power off to stop"));
+  while (Serial.available() == 0) {
+    motorStop();
+    delay(50);
+  }
+  while (Serial.available() > 0) Serial.read(); // flush
+}
+
 // =====================================================================
 // STATE 1: START_LINE - white line on black floor
 // =====================================================================
@@ -302,10 +311,36 @@ void doStartLine() {
     Serial.println();
   }
 
-  // State transition: avg drops below white threshold = on Dalgasi
-  if (avg < BG_WHITE_THRESHOLD) {
+  // Dalgasi detection - combined check, both must hold:
+  //   (A) BOTH edge sensors over white floor (<150 - stricter)
+  //   (B) AT LEAST ONE inner sensor over black line (>600 - reading the wavy line)
+  // This avoids false triggers when start-area's white line briefly
+  // covers all sensors: in that case inner sensors are LOW (over white line),
+  // not HIGH (over black line), so (B) fails.
+  const int EDGE_WHITE_THRESHOLD = 150;
+  const int LINE_BLACK_THRESHOLD = 600;
+  bool bothEdgesOnWhite =
+    (sensorValues[0] < EDGE_WHITE_THRESHOLD) &&
+    (sensorValues[3] < EDGE_WHITE_THRESHOLD);
+  bool blackLineUnderInner =
+    (sensorValues[1] > LINE_BLACK_THRESHOLD) ||
+    (sensorValues[2] > LINE_BLACK_THRESHOLD);
+  bool onDalgasi = bothEdgesOnWhite && blackLineUnderInner;
+
+  // Require ~500ms of sustained signal before transition
+  const int DALGASI_CONFIRM_FRAMES = 25;
+  if (onDalgasi) {
     stateChangeCounter++;
-    if (stateChangeCounter >= STATE_CHANGE_FRAMES) {
+    if (stateChangeCounter >= DALGASI_CONFIRM_FRAMES) {
+      motorStop();
+      Serial.print(F("=== State 1 COMPLETE - sensors at trigger: "));
+      for (int i = 0; i < 4; i++) {
+        Serial.print(sensorValues[i]); Serial.print(F(" "));
+      }
+      Serial.println();
+      Serial.println(F("Press any key to enter Akdeniz Dalgasi..."));
+      while (!Serial.available()) delay(10);
+      while (Serial.available()) Serial.read();
       Serial.println(F("State 2: DALGASI"));
       currentState = STATE_DALGASI;
       stateChangeCounter = 0;
@@ -339,6 +374,7 @@ void doDalgasi() {
   if (avg > BG_BLACK_THRESHOLD) {
     stateChangeCounter++;
     if (stateChangeCounter >= STATE_CHANGE_FRAMES) {
+       waitForKey();
       Serial.println(F("State 3: AFTER_DALGASI"));
       currentState = STATE_AFTER_DALGASI;
       stateChangeCounter = 0;
@@ -531,6 +567,13 @@ void pidFollow(unsigned int position) {
   int error = position - 1500;
   int correction = Kp * error + Kd * (error - lastError);
   lastError = error;
+
+  // Serial.println(F("position error lastError correction "));
+  // Serial.print(position);
+  // Serial.print(F(" "));  Serial.print(error);
+  // Serial.print(F(" "));  Serial.print(lastError);
+  // Serial.print(F(" "));Serial.print(correction);
+  // Serial.println();
 
   int leftSpeed = constrain(BASE_SPEED + correction, -100, MAX_SPEED);
   int rightSpeed = constrain(BASE_SPEED - correction, -100, MAX_SPEED);
