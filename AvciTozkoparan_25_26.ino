@@ -461,7 +461,11 @@ void doSearchLine() {
   motorRight(80);
 
   qtra.readLineWhite(sensorValues);
-  if (sensorValues[1] > 500 || sensorValues[2] > 500) {
+  // Looking for the WHITE line on black floor. With this library,
+  // HIGH = black, LOW = white. So an inner sensor crossing the white
+  // line will drop to a low value.
+  const int WHITE_LINE_THRESHOLD = 300;
+  if (sensorValues[1] < WHITE_LINE_THRESHOLD || sensorValues[2] < WHITE_LINE_THRESHOLD) {
     Serial.println(F("Line found"));
     Serial.println(F("State 6: AFTER_SHOT_LINE"));
     currentState = STATE_AFTER_SHOT_LINE;
