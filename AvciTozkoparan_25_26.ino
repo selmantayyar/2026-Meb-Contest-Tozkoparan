@@ -504,17 +504,24 @@ void doGreenBridge() {
   if (!ledOn) {
     setAllPixels(0, 200, 0);
     ledOn = true;
+
+    // Momentum burst at the foot of the ramp - kinetic energy to climb
+    // before the incline can drag the robot to a stall.
+    motorLeft(MAX_SPEED);
+    motorRight(MAX_SPEED);
+    delay(250);
   }
 
   unsigned int position = qtra.readLineWhite(sensorValues);
   int error = position - 1500;
-  // softer: half Kp, half Kd
-  int correction = (Kp * 0.5) * error + (Kd * 0.5) * (error - lastError);
+  // Full Kp/Kd at the higher speed - faster motion needs stronger corrections
+  int correction = Kp * error + Kd * (error - lastError);
   lastError = error;
 
-  int speed = BASE_SPEED - 20;
-  int leftSpeed = constrain(speed + correction, 50, MAX_SPEED);
-  int rightSpeed = constrain(speed - correction, 50, MAX_SPEED);
+  // Boosted speed on the ramp - high enough to keep climbing
+  const int BRIDGE_SPEED = 150;
+  int leftSpeed = constrain(BRIDGE_SPEED + correction, 80, MAX_SPEED);
+  int rightSpeed = constrain(BRIDGE_SPEED - correction, 80, MAX_SPEED);
   motorLeft(leftSpeed);
   motorRight(rightSpeed);
 
